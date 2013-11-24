@@ -17,6 +17,8 @@ import sys
 import datetime
 import netaddr
 
+resolve_router_hostnames = True
+
 MCAST_GROUP = '224.0.0.5'
 PROTO_OSPF = 89
 
@@ -92,9 +94,15 @@ class OSPF_LSA_Network(OSPF_LSA_Header):
   def __str__(self):
     return ', '.join([str(self.lsid), str(self.advrouter), str(self.netmask), '{'+', '.join([str(a) for a in self.attached])+'}'])
 
+class OSPF_LSA_External(OSPF_LSA_Header):
+  def __init__(self, data):
+    OSPF_LSA_Header.__init__(self, data)
+    self.netmask = netaddr.IPAddress(socket.inet_ntoa(data[20:24]))
+    self.metric = mkNetInt(data[24:28]) & 0x00ffffff
+    
 
 class OSPF_LS_Update(object):
-  lsTypes = { 1: ('Router-LSAs', OSPF_LSA_Router), 2: ('Network-LSAs', OSPF_LSA_Network) }
+  lsTypes = { 1: ('Router-LSAs', OSPF_LSA_Router), 2: ('Network-LSAs', OSPF_LSA_Network), 5: ('AS-external-LSAs', OSPF_LSA_External) }
   def __init__(self, data):
     self.routerID = netaddr.IPAddress(socket.inet_ntoa(data[4:8]))
     self.areaID = netaddr.IPAddress(socket.inet_ntoa(data[8:12]))
@@ -112,6 +120,7 @@ class OSPF_LS_Update(object):
 
 class NetworkModel(object):
   def __init__(self):
+    self.extnetworks={}
     self.networks={}
     self.routers={}
     self.changed = False
@@ -136,6 +145,13 @@ class NetworkModel(object):
       #for i in self.routers:
       #  print i, self.routers[i]
       #print '-'*30
+    elif lsa.type == 5:
+      network = lsa.lsid & lsa.netmask
+      if not self.extnetworks.has_key(lsa.advrouter):
+        self.extnetworks[lsa.advrouter] = {}
+      if not self.extnetworks[lsa.advrouter].has_key(network) or lsa.seq > self.extnetworks[lsa.advrouter][network].seq:
+        self.extnetworks[lsa.advrouter][network] = lsa
+        self.changed = True
     else:
       print "Unknown LSA!", lsa.type
 
@@ -146,13 +162,33 @@ class NetworkModel(object):
     out.append('  label="Generated: %s";' % str(datetime.datetime.utcnow()))
     out.append('  node [shape="box",style="rounded"];')
 
+    nodes = set()
+    links = []
+
+    p2pnw = {}
+    p2plink = {}
+
     for r in self.routers:
       out.append('  subgraph cluster_%s {' % safeIPAddr(r))
-      out.append('    label = "%s";' % r)
+
+      label = r
+      if resolve_router_hostnames:
+        try:
+          label = '%s\\n(%s)' % (socket.gethostbyaddr(str(r))[0].split('.')[0], r)
+        except:
+          print 'Could not get hostname for router %s' % r
+
+      out.append('    label = "%s";' % label)
+      rnodes = set()
       for iface in self.routers[r].links:
-        if iface.type == 2:
-          out.append('    N%s [label="%s"];' % (safeIPAddr(iface.data), iface.data ))
-      out.append('  }');
+        if iface.type == 2:  # transit n/w
+          rnodes.add('    N%s [label="%s"];' % (safeIPAddr(iface.data), iface.data ))
+        elif iface.type == 1:  # p2p n/w
+          rnodes.add('    N%s [label="%s"];' % (safeIPAddr(iface.data), iface.data ))
+          p2pnw[str(iface.data)] = str(r)
+          p2plink['%s_%s' % (iface.id, r)] = str(iface.data)
+      out += list(rnodes)
+      out.append('  }')
 
     for nw in self.networks:
       out.append('  nw_%s [shape="plaintext",label="%s/%s"];' % (safeIPAddr(nw), nw, self.networks[nw].netmask.bin.count('1') ))
@@ -160,12 +196,27 @@ class NetworkModel(object):
     for r in self.routers:
       for iface in self.routers[r].links:
         if iface.type == 2:  # transit n/w
-          out.append('  N%s -- nw_%s [label="%s"];' % (safeIPAddr(iface.data), safeIPAddr(destNW(iface.data, self.networks)), iface.metric))
+          links.append('  N%s -- nw_%s [label="%s"];' % (safeIPAddr(iface.data), safeIPAddr(destNW(iface.data, self.networks)), iface.metric))
         elif iface.type == 3:  # stub n/w
-          out.append('  stub_%s [shape="doubleoctagon",label="%s/%s"];' % (safeIPAddr(iface.id), iface.id, iface.data.bin.count('1')))
-          out.append('  cluster_%s -- stub_%s [label="%s"];' % (safeIPAddr(r), safeIPAddr(iface.id), iface.metric))
+          if (str(iface.id) not in p2pnw) or (str(p2pnw[str(iface.id)]) == str(r)) or ('%s_%s' % (p2pnw[str(iface.id)], r) not in p2plink):
+            nodes.add('  stub_%s [shape="doubleoctagon",label="%s/%s"];' % (safeIPAddr(iface.id), iface.id, iface.data.bin.count('1')))
+            links.append('  cluster_%s -- stub_%s [label="%s"];' % (safeIPAddr(r), safeIPAddr(iface.id), iface.metric))
+          else:
+            remoteid = p2pnw[str(iface.id)]
+            p2psorted = sorted([remoteid, str(r)])
+            p2plocalip = p2plink['%s_%s' % (remoteid, r)]
+            nodes.add('  ptp_%s_%s [shape="plaintext",label="Tunnel"];' % (safeIPAddr(p2psorted[0]), safeIPAddr(p2psorted[1])))
+            links.append('  N%s -- ptp_%s_%s [label="%s"];' % (safeIPAddr(p2plocalip), safeIPAddr(p2psorted[0]), safeIPAddr(p2psorted[1]), iface.metric))
+
+      if r in self.extnetworks:
+        for extnet in self.extnetworks[r]:
+          nodes.add('  extnet_%s [shape="octagon",label="%s/%s"];' % (safeIPAddr(extnet), extnet, self.extnetworks[r][extnet].netmask.bin.count('1')))
+          links.append('  cluster_%s -- extnet_%s [label="%s"];' % (safeIPAddr(r), safeIPAddr(extnet), self.extnetworks[r][extnet].metric))
+
+    out += list(nodes) + links
 
     out.append('}')
+    out.append('')
     self.changed = False
     return '\n'.join(out)
 

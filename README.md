@@ -32,8 +32,8 @@ Limitations
 
 Only OSPFv2 is supported.
 Only LS Update messages are analysed.
-Only Router LSAs and Network LSAs are handled at present.
-For Router LSAs, only transit networks and stub networks are handled.
+Only Router LSAs, Network LSAs and External LSAs are handled at present.
+For Router LSAs, only transit networks, stub networks and point to point networks are handled.
 
 Acknowledgements
 ----------------
