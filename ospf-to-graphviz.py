@@ -19,18 +19,13 @@ import netaddr
 import pcap
 import dpkt
 import struct 
+import binascii
 
 resolve_router_hostnames = False
 
-MCAST_GROUP = '224.0.0.5'
-PROTO_OSPF = 89
+OSPF_TYPE = ["Invalid","Hello","DBD","LSR","LSU","LSA"]
 
-OSPF_TYPE_IGP = 0x59
-HELLO_PACKET = 1
-DB_DESCRIPTION = 2
-LS_REQUEST = 3
-LS_UPDATE = 4
-LS_ACKNOWLEDGE = 5
+
 
 
 def mkNetInt(r):
@@ -225,22 +220,18 @@ class NetworkModel(object):
 
 nw = NetworkModel()
 
-def processPacket(addr, data):
-  pos = 0
-  # Message Type 
-  if ord(data[pos+1]) == LS_UPDATE:
-#    print "LS Update (%d)" % (ord(data[pos+1]),)
-    z=OSPF_LS_Update(data[pos:])
-    for l in z.lsa:
-      nw.injectLSA(l)
+def processPacket(data):
+  z=OSPF_LS_Update(data)
+  for l in z.lsa:
+    nw.injectLSA(l)
 
-    if nw.changed:
-      if graphFile:
-        f=open(graphFile, 'w')
-        f.write(nw.generateGraph())
-        f.close()
-      else:
-        print nw.generateGraph()
+  if nw.changed:
+    if graphFile:
+      f=open(graphFile, 'w')
+      f.write(nw.generateGraph())
+      f.close()
+    else:
+      print nw.generateGraph()
 
 graphFile = None
 
@@ -263,11 +254,12 @@ if __name__ == '__main__':
         print "Invalid OSPF Packet"
         continue 
       ospf = ip.data
-      ospftypes = ["Invalid","Hello","DBD","LSR","LSU","LSA"]
-      # Hello Packets are too chatty
-      if ospftypes[ospf.type] != "Hello":
-        print timestamp, "src: ", socket.inet_ntoa(ip.src), "\tRouter: ", str(netaddr.IPAddress(ospf.router)), "\tArea: ", ospf.area, "\tType: ", ospftypes[ospf.type]
-      processPacket(ip.src,data[34:])
+      # Only process actual update packets
+      if OSPF_TYPE[ospf.type] == "LSU":    
+        print timestamp, "src: ", socket.inet_ntoa(ip.src), "\tRouter: ", str(netaddr.IPAddress(ospf.router)), "\tArea: ", ospf.area, "\tType: ", OSPF_TYPE[ospf.type]
+        processPacket(data[34:])
+#      else 
+#        print timestamp, "src: ", socket.inet_ntoa(ip.src), "\tRouter: ", str(netaddr.IPAddress(ospf.router)), "\tArea: ", ospf.area, "\tType: ", OSPF_TYPE[ospf.type]
   except KeyboardInterrupt:
     sys.exit()  
 
