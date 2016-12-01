@@ -10,8 +10,10 @@ Prerequisites
 -------------
 
 python-netaddr
+python-dpkt
+python-libpcap
 
-The script has been tested under Python2.6 
+The script has been tested under Python2.7
 
 Usage
 -----
@@ -40,3 +42,6 @@ Acknowledgements
 
 This code is based on a Python recipe by Ferdy Riphagen:
 http://code.activestate.com/recipes/576664-ospf-multicast-sniffer/
+
+Originally written by Michael Procter:
+https://github.com/mhp/ospf-to-graphviz

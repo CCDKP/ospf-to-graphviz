@@ -2,7 +2,7 @@
 #
 # OSPF Multicast Sniffer and graphviz graph generator 
 # 
-# Listens to multicast group 224.0.0.5 (AllSPFRouters), processes
+# Starts sniffing for OSPF traffic, processes
 # LS Update messages and generates a graphviz network graph.
 # To convert to image file, use:
 #   ospf-to-graphviz.py mynetwork.dot
@@ -16,8 +16,11 @@ import socket
 import sys
 import datetime
 import netaddr
+import pcap
+import dpkt
+import struct 
 
-resolve_router_hostnames = True
+resolve_router_hostnames = False
 
 MCAST_GROUP = '224.0.0.5'
 PROTO_OSPF = 89
@@ -131,8 +134,8 @@ class NetworkModel(object):
       if not self.networks.has_key(network) or lsa.seq > self.networks[network].seq:
         self.networks[network] = lsa
         self.changed = True
-      #else:
-      #  print "N/W lsa is old", lsa
+      else:
+        print "N/W lsa is old", lsa
       #for i in self.networks:
       #  print i, self.networks[i]
       #print '-'*30
@@ -140,8 +143,8 @@ class NetworkModel(object):
       if not self.routers.has_key(lsa.lsid) or lsa.seq > self.routers[lsa.lsid].seq:
         self.routers[lsa.lsid] = lsa
         self.changed = True
-      #else:
-      #  print "Router lsa is old", lsa
+      else:
+        print "Router lsa is old", lsa
       #for i in self.routers:
       #  print i, self.routers[i]
       #print '-'*30
@@ -226,7 +229,7 @@ def processPacket(addr, data):
   pos = 0
   # Message Type 
   if ord(data[pos+1]) == LS_UPDATE:
-    #print "LS Update (%d)" % (ord(data[pos+1]),)
+#    print "LS Update (%d)" % (ord(data[pos+1]),)
     z=OSPF_LS_Update(data[pos:])
     for l in z.lsa:
       nw.injectLSA(l)
@@ -248,15 +251,23 @@ if __name__ == '__main__':
 
   print "Output file:", graphFile
 
-  listenIP='0.0.0.0'
-  sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, PROTO_OSPF)
-  sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-  sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, socket.inet_aton(MCAST_GROUP) + socket.inet_aton(listenIP))
+  
+  sock = pcap.pcap(name=None, promisc=True, immediate=True)
+  sock.setfilter("proto 89")
+  print "Listener started"
+  try:
+    for timestamp, data in sock:
+      eth=dpkt.ethernet.Ethernet(data)
+      ip=eth.data
+      if not isinstance(ip.data, dpkt.ospf.OSPF):
+        print "Invalid OSPF Packet"
+        continue 
+      ospf = ip.data
+      ospftypes = ["Invalid","Hello","DBD","LSR","LSU","LSA"]
+      # Hello Packets are too chatty
+      if ospftypes[ospf.type] != "Hello":
+        print timestamp, "src: ", socket.inet_ntoa(ip.src), "\tRouter: ", str(netaddr.IPAddress(ospf.router)), "\tArea: ", ospf.area, "\tType: ", ospftypes[ospf.type]
+      processPacket(ip.src,data[34:])
+  except KeyboardInterrupt:
+    sys.exit()  
 
-  while True:
-    try:
-      data, addr = sock.recvfrom(10240)
-      if data and ord(data[9]) == OSPF_TYPE_IGP:
-        processPacket(addr, data[20:])
-    except KeyboardInterrupt:
-      sys.exit()
