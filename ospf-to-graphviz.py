@@ -129,20 +129,16 @@ class NetworkModel(object):
       if not self.networks.has_key(network) or lsa.seq > self.networks[network].seq:
         self.networks[network] = lsa
         self.changed = True
+#        print "Network Update: ", lsa
       else:
         print "N/W lsa is old", lsa
-      #for i in self.networks:
-      #  print i, self.networks[i]
-      #print '-'*30
     elif lsa.type == 1:
       if not self.routers.has_key(lsa.lsid) or lsa.seq > self.routers[lsa.lsid].seq:
         self.routers[lsa.lsid] = lsa
         self.changed = True
+#        print "Router Update: ", lsa
       else:
         print "Router lsa is old", lsa
-      #for i in self.routers:
-      #  print i, self.routers[i]
-      #print '-'*30
     elif lsa.type == 5:
       network = lsa.lsid & lsa.netmask
       if not self.extnetworks.has_key(lsa.advrouter):
@@ -150,6 +146,9 @@ class NetworkModel(object):
       if not self.extnetworks[lsa.advrouter].has_key(network) or lsa.seq > self.extnetworks[lsa.advrouter][network].seq:
         self.extnetworks[lsa.advrouter][network] = lsa
         self.changed = True
+#        print "Extern update: ", lsa
+      else:
+        print "Extern LSA is old"
     else:
       print "Unknown LSA!", lsa.type
 
@@ -232,6 +231,14 @@ def processPacket(data):
       f.close()
     else:
       print nw.generateGraph()
+#    print "Router Debug:"
+#    for i in nw.routers:
+#      print i, nw.routers[i]
+#    print '-'*30
+#    print "Network Debug:"
+#    for i in nw.networks:
+#      print i, nw.networks[i]
+#    print '-'*30
 
 graphFile = None
 
