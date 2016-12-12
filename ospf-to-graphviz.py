@@ -226,36 +226,35 @@ def processPacket(data):
         nw.injectLSA(l)
 
     if nw.changed:
-        if dotFile:
-            f=open(dotFile, 'w')
+        if args.dotFile:
+            f=open(args.dotFile, 'w')
             f.write(nw.generateGraph())
             f.close()
-        else:
-            print nw.generateGraph()
-#   print "Router Debug:"
-#   for i in nw.routers:
-#     print i, nw.routers[i]
-#   print '-'*30
-#   print "Network Debug:"
-#   for i in nw.networks:
-#     print i, nw.networks[i]
-#   print '-'*30
-
-dotFile = None
+    if args.dbg:
+        print "Router Debug:"
+        for i in nw.routers:
+            print i, nw.routers[i]
+        print '-'*30
+        print "Network Debug:"
+        for i in nw.networks:
+            print i, nw.networks[i]
+        print '-'*30
 
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description="Monitor OSPF packets and build a link-state database")
-    parser.add_argument('-i', '--input' , dest='input', default=None,
-                      help='Interface or pcap file to read from (default: First interface')
-    parser.add_argument('-d', '--dot', dest=dotFile,
-                      help='Output Graphviz compatible DOT file.')
-    parser.add_argument('-v', '--verbose', dest=verbose, default=0, action=count,
-                      help='Increase output verbosity')
+    parser.add_argument('-i', '--input', default=None, metavar='file',
+                        help='Interface or pcap file to read from (default: First interface')
+    parser.add_argument('-d', '--dot', dest='dotFile', default=None, metavar='file',
+                        help='Output Graphviz compatible DOT file.')
+    parser.add_argument('-v', '--verbose', default=0, action='count',
+                        help='Increase output verbosity')
+    parser.add_argument('--dbg', action='store_true',
+                        help='Pause between packets and display link state DB.')
     args = parser.parse_args()
 
     if args.verbose >= 3:
-        print "Output file: ", dotFile
+        print "Output file: ", args.dotFile
 
     try:
         sock = pcap.pcap(name=args.input, promisc=True, immediate=True)
@@ -263,7 +262,7 @@ if __name__ == '__main__':
     except:
         print "Error opening packet source: ", args.input
         sys.exit()
-    if args.verbose >= 3:
+    if args.verbose >= 1:
         print "Successfully connected to packet source: ", args.input
 
     try:
@@ -271,15 +270,20 @@ if __name__ == '__main__':
             eth=dpkt.ethernet.Ethernet(data)
             ip=eth.data
             if not isinstance(ip.data, dpkt.ospf.OSPF):
-                print "Invalid OSPF Packet"
+                if args.verbose >= 1:
+                    print "Invalid OSPF Packet"
                 continue
             ospf = ip.data
             # Only process actual update packets
             if OSPF_TYPE[ospf.type] == "LSU":
-                print timestamp, "src: ", socket.inet_ntoa(ip.src), "\tRouter: ", str(netaddr.IPAddress(ospf.router)), "\tArea: ", ospf.area, "\tType: ", OSPF_TYPE[ospf.type]
+                if args.verbose >= 2:
+                    print timestamp, "src: ", socket.inet_ntoa(ip.src), "\tRouter: ", str(netaddr.IPAddress(ospf.router)), "\tArea: ", ospf.area, "\tType: ", OSPF_TYPE[ospf.type]
                 processPacket(data[34:])
-            #      else
-            #        print timestamp, "src: ", socket.inet_ntoa(ip.src), "\tRouter: ", str(netaddr.IPAddress(ospf.router)), "\tArea: ", ospf.area, "\tType: ", OSPF_TYPE[ospf.type]
+                if args.dbg:
+                    raw_input("Press Enter to continue...")
+            elif args.verbose >= 3:
+                print timestamp, "src: ", socket.inet_ntoa(ip.src), "\tRouter: ", str(netaddr.IPAddress(ospf.router)), "\tArea: ", ospf.area, "\tType: ", OSPF_TYPE[ospf.type]
     except KeyboardInterrupt:
         sys.exit()
+    print "Processing Completed."
 
