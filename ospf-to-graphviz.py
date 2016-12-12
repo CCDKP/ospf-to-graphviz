@@ -18,6 +18,7 @@ import datetime
 import netaddr
 import pcap
 import dpkt
+import argparse
 import struct
 import binascii
 
@@ -225,8 +226,8 @@ def processPacket(data):
         nw.injectLSA(l)
 
     if nw.changed:
-        if graphFile:
-            f=open(graphFile, 'w')
+        if dotFile:
+            f=open(dotFile, 'w')
             f.write(nw.generateGraph())
             f.close()
         else:
@@ -240,19 +241,31 @@ def processPacket(data):
 #     print i, nw.networks[i]
 #   print '-'*30
 
-graphFile = None
+dotFile = None
 
 if __name__ == '__main__':
 
-    if len(sys.argv) == 2:
-        graphFile = sys.argv[1]
+    parser = argparse.ArgumentParser(description="Monitor OSPF packets and build a link-state database")
+    parser.add_argument('-i', '--input' , dest='input', default=None,
+                      help='Interface or pcap file to read from (default: First interface')
+    parser.add_argument('-d', '--dot', dest=dotFile,
+                      help='Output Graphviz compatible DOT file.')
+    parser.add_argument('-v', '--verbose', dest=verbose, default=0, action=count,
+                      help='Increase output verbosity')
+    args = parser.parse_args()
 
-    print "Output file:", graphFile
+    if args.verbose >= 3:
+        print "Output file: ", dotFile
 
+    try:
+        sock = pcap.pcap(name=args.input, promisc=True, immediate=True)
+        sock.setfilter("proto 89")
+    except:
+        print "Error opening packet source: ", args.input
+        sys.exit()
+    if args.verbose >= 3:
+        print "Successfully connected to packet source: ", args.input
 
-    sock = pcap.pcap(name=None, promisc=True, immediate=True)
-    sock.setfilter("proto 89")
-    print "Listener started"
     try:
         for timestamp, data in sock:
             eth=dpkt.ethernet.Ethernet(data)
