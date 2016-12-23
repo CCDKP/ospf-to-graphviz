@@ -12,28 +12,29 @@
 # http://code.activestate.com/recipes/576664-ospf-multicast-sniffer/
 #
 
-import socket
+from socket import gethostbyaddr, inet_ntoa
 import sys
 import datetime
 import netaddr
 import pcap
 import dpkt
 import argparse
-import struct
-import binascii
+#from binascii import hexlify
 
 resolve_router_hostnames = False
 
-OSPF_TYPE = ["Invalid","Hello","DBD","LSR","LSU","LSA"]
+OSPFTypes = {1: 'Hello',
+             2: 'DBD',
+             3: 'LSR',
+             4: 'LSU',
+             5: 'LSAck'}
 
 
-
-
-def mkNetInt(r):
+def bytesToInt(r):
     if len(r)==1:
         return ord(r[0])
     else:
-        return ord(r[0])*256 + mkNetInt(r[1:])
+        return ord(r[0])*256 + bytesToInt(r[1:])
 
 
 def safeIPAddr(ip):
@@ -47,24 +48,64 @@ def destNW(ip, networks):
     return None
 
 
+"""
+    OSPF LSA Packet header (IP header removed)
+    +--------+--------+--------+--------+
+    | Byte 1 | Byte 2 | Byte 3 | Byte 4 |
+    +--------+--------+--------+--------+
+   0|      LS age     | Options|  Type  |
+    +--------+--------+--------+--------+
+   4|           Link State ID           |
+    +--------+--------+--------+--------+
+   8|         Advertising Router        |
+    +--------+--------+--------+--------+
+  12|          Sequence Number          |
+    +--------+--------+--------+--------+
+  16|  LS  Checksum   |  Total  Length  |
+    +--------+--------+--------+--------+
+  20|        Type-dependent data...     |
+"""
 class OSPF_LSA_Header(object):
     def __init__(self, data):
-        self.age = mkNetInt(data[0:2])
+        self.age = bytesToInt(data[0:2])
         self.options = ord(data[2])
         self.type = ord(data[3])
-        self.lsid = netaddr.IPAddress(socket.inet_ntoa(data[4:8]))
-        self.advrouter = netaddr.IPAddress(socket.inet_ntoa(data[8:12]))
-        self.seq = mkNetInt(data[12:16])
+        self.lsid = netaddr.IPAddress(inet_ntoa(data[4:8]))
+        self.advrouter = netaddr.IPAddress(inet_ntoa(data[8:12]))
+        self.seq = bytesToInt(data[12:16])
 
 
+"""
+    OSPF LSA Router Packet (LSA type 1)
+    +--------+--------+--------+--------+
+    | Byte 1 | Byte 2 | Byte 3 | Byte 4 |
+    +--------+--------+--------+--------+
+0-16|      20 byte OSPF LSU Header      |
+    +--------+--------+--------+--------+
+  20|VEBflags|  NULL  |   Link Count    |
+    +--------+--------+--------+--------+
+  24|        12-byte Link objects...    |
+
+
+    Link Objects
+    +--------+--------+--------+--------+
+    | Byte 1 | Byte 2 | Byte 3 | Byte 4 |
+    +--------+--------+--------+--------+
+   0|             Link ID               |
+    +--------+--------+--------+--------+
+   4|             Link Data             |
+    +--------+--------+--------+--------+
+   8|  Type  | # TOS  |     Metric      |
+    +--------+--------+--------+--------+
+"""
 class OSPF_LSA_Router(OSPF_LSA_Header):
     class Link(object):
         linkTypes = { 1: 'p2p to router', 2: 'transit n/w', 3: 'stub n/w', 4: 'virtual link' }
         def __init__(self, data):
-            self.id = netaddr.IPAddress(socket.inet_ntoa(data[0:4]))
-            self.data = netaddr.IPAddress(socket.inet_ntoa(data[4:8]))
+            self.id = netaddr.IPAddress(inet_ntoa(data[0:4]))
+            self.data = netaddr.IPAddress(inet_ntoa(data[4:8]))
             self.type = ord(data[8])
-            self.metric = mkNetInt(data[10:12])
+            self.metric = bytesToInt(data[10:12])
         def __str__(self):
             return '%s (%d): %s [%s], %d' % (self.linkTypes[self.type], self.type, self.id, self.data, self.metric)
 
@@ -79,42 +120,77 @@ class OSPF_LSA_Router(OSPF_LSA_Header):
     def __str__(self):
         return ', '.join([str(self.lsid), str(self.advrouter), '\n[ '+'\n  '.join([str(l) for l in self.links])+'\n]'])
 
-
+"""
+    OSPF LSA Network Packet (LSA type 2)
+    +--------+--------+--------+--------+
+    | Byte 1 | Byte 2 | Byte 3 | Byte 4 |
+    +--------+--------+--------+--------+
+0-16|      20 byte OSPF LSU Header      |
+    +--------+--------+--------+--------+
+  20|           Network Mask            |
+    +--------+--------+--------+--------+
+  24|    4-byte Attached Routers...     |
+"""
 class OSPF_LSA_Network(OSPF_LSA_Header):
     def __init__(self, data):
         OSPF_LSA_Header.__init__(self, data)
-        self.netmask = netaddr.IPAddress(socket.inet_ntoa(data[20:24]))
+        self.netmask = netaddr.IPAddress(inet_ntoa(data[20:24]))
         data = data[24:]
         self.attached = []
         while len(data) > 0:
-            self.attached.append(netaddr.IPAddress(socket.inet_ntoa(data[0:4])))
+            ip = netaddr.IPAddress(inet_ntoa(data[0:4]))
+            self.attached.append(ip)
             data = data[4:]
 
     def __str__(self):
         return ', '.join([str(self.lsid), str(self.advrouter), str(self.netmask), '{'+', '.join([str(a) for a in self.attached])+'}'])
 
+
+"""
+@TODO: Add support for LSA Type 3 & 4 Summary & ASBR LSAs
+"""
+
+"""
+    OSPF LSA External Packet (LSA type 5)
+    +--------+--------+--------+--------+
+    | Byte 1 | Byte 2 | Byte 3 | Byte 4 |
+    +--------+--------+--------+--------+
+0-16|      20 byte OSPF LSU Header      |
+    +--------+--------+--------+--------+
+  20|           Network Mask            |
+    +--------+--------+--------+--------+
+  24|Type bit|           Metric         |
+    +--------+--------+--------+--------+
+  28|         Forwarding Address        |
+    +--------+--------+--------+--------+
+  32|  OSPFv1 Legacy & Unused data...   |
+
+"""
+
 class OSPF_LSA_External(OSPF_LSA_Header):
     def __init__(self, data):
         OSPF_LSA_Header.__init__(self, data)
-        self.netmask = netaddr.IPAddress(socket.inet_ntoa(data[20:24]))
-        self.metric = mkNetInt(data[24:28]) & 0x00ffffff
+        self.netmask = netaddr.IPAddress(inet_ntoa(data[20:24]))
+        self.metric = bytesToInt(data[24:28]) & 0x00ffffff
 
+"""
+@TODO: Add support for LSA Type 7 NSSA LSAs
+"""
 
-class OSPF_LS_Update(object):
+class OSPF_LSUpdate(object):
     lsTypes = { 1: ('Router-LSAs', OSPF_LSA_Router), 2: ('Network-LSAs', OSPF_LSA_Network), 5: ('AS-external-LSAs', OSPF_LSA_External) }
     def __init__(self, data):
-        self.routerID = netaddr.IPAddress(socket.inet_ntoa(data[4:8]))
-        self.areaID = netaddr.IPAddress(socket.inet_ntoa(data[8:12]))
         self.lsa = []
-
-        numLSAs = mkNetInt(data[24:28])
-        lsas = data[28:]
+        numLSAs = bytesToInt(data[0:4])
+        rawLSAs = data[4:]
         for i in range(numLSAs):
-            lsaLen = mkNetInt(lsas[18:20])
-            lsType = ord(lsas[3])
+            lsaLen = bytesToInt(rawLSAs[18:20])
+            lsType = ord(rawLSAs[3])
             if lsType in self.lsTypes:
-                self.lsa.append(self.lsTypes[lsType][1](lsas[0:lsaLen]))
-            lsas=lsas[lsaLen:]
+                klass = self.lsTypes[lsType][1]
+                instance = klass(rawLSAs[0:lsaLen])
+                self.lsa.append(instance)
+            rawLSAs=rawLSAs[lsaLen:]
 
 
 class NetworkModel(object):
@@ -172,7 +248,7 @@ class NetworkModel(object):
             label = r
             if resolve_router_hostnames:
                 try:
-                    label = '%s\\n(%s)' % (socket.gethostbyaddr(str(r))[0].split('.')[0], r)
+                    label = '%s\\n(%s)' % (gethostbyaddr(str(r))[0].split('.')[0], r)
                 except:
                     print 'Could not get hostname for router %s' % r
 
@@ -218,27 +294,7 @@ class NetworkModel(object):
         self.changed = False
         return '\n'.join(out)
 
-nw = NetworkModel()
 
-def processPacket(data):
-    z=OSPF_LS_Update(data)
-    for l in z.lsa:
-        nw.injectLSA(l)
-
-    if nw.changed:
-        if args.dotFile:
-            f=open(args.dotFile, 'w')
-            f.write(nw.generateGraph())
-            f.close()
-    if args.dbg:
-        print "Router Debug:"
-        for i in nw.routers:
-            print i, nw.routers[i]
-        print '-'*30
-        print "Network Debug:"
-        for i in nw.networks:
-            print i, nw.networks[i]
-        print '-'*30
 
 if __name__ == '__main__':
 
@@ -265,24 +321,58 @@ if __name__ == '__main__':
     if args.verbose >= 1:
         print "Successfully connected to packet source: ", args.input
 
+    nw = NetworkModel()
+
     try:
         for timestamp, data in sock:
-            eth=dpkt.ethernet.Ethernet(data)
-            ip=eth.data
+            eth = dpkt.ethernet.Ethernet(data)
+            ip = eth.data
             if not isinstance(ip.data, dpkt.ospf.OSPF):
                 if args.verbose >= 1:
                     print "Invalid OSPF Packet"
                 continue
             ospf = ip.data
             # Only process actual update packets
-            if OSPF_TYPE[ospf.type] == "LSU":
+            if ospf.type == 4:
                 if args.verbose >= 2:
-                    print timestamp, "src: ", socket.inet_ntoa(ip.src), "\tRouter: ", str(netaddr.IPAddress(ospf.router)), "\tArea: ", ospf.area, "\tType: ", OSPF_TYPE[ospf.type]
-                processPacket(data[34:])
+                    print timestamp, \
+                        "src: ", inet_ntoa(ip.src), \
+                        "\tRouter: ", str(netaddr.IPAddress(ospf.router)), \
+                        "\tArea: ", ospf.area, \
+                        "\tType: ", OSPFTypes[ospf.type]
+
+                lsu = OSPF_LSUpdate(ospf.data)
+                for l in lsu.lsa:
+                    nw.injectLSA(l)
+
+                if nw.changed:
+                    if args.dotFile:
+                        f = open(args.dotFile, 'w')
+                        f.write(nw.generateGraph())
+                        f.close()
+
                 if args.dbg:
+                    print "Router Debug:"
+                    for i in nw.routers:
+                        print i, " - ", nw.routers[i]
+                    print '-' * 30
+                    print "Network Debug:"
+                    for i in nw.networks:
+                        print i, " - ", nw.networks[i]
+                    print '-' * 30
                     raw_input("Press Enter to continue...")
+
             elif args.verbose >= 3:
-                print timestamp, "src: ", socket.inet_ntoa(ip.src), "\tRouter: ", str(netaddr.IPAddress(ospf.router)), "\tArea: ", ospf.area, "\tType: ", OSPF_TYPE[ospf.type]
+                if ospf.type in OSPFTypes:
+                    packettype = OSPFTypes[ospf.type]
+                else:
+                    packettype = 'UNKNOWN'
+
+                print timestamp, \
+                    "Src: ", inet_ntoa(ip.src), \
+                    "\tRouter: ", str(netaddr.IPAddress(ospf.router)), \
+                    "\tArea: ", ospf.area, \
+                    "\tType: ", packettype
     except KeyboardInterrupt:
         sys.exit()
     print "Processing Completed."
